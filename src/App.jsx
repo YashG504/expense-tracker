@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useContext, useReducer, useRef, createContext } from 'react';
 import { Mic, MicOff, Plus, Download, Moon, Sun, Camera, DollarSign, TrendingUp, AlertCircle } from 'lucide-react';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import jsPDF from 'jspdf';
 
 // Theme Context
 const ThemeContext = createContext();
@@ -21,26 +20,9 @@ const expenseReducer = (state, action) => {
 };
 
 // Custom Hooks
-const useLocalStorage = (key, initialValue) => {
-  const [storedValue, setStoredValue] = useState(() => {
-    try {
-      const item = window.localStorage.getItem(key);
-      return item ? JSON.parse(item) : initialValue;
-    } catch (error) {
-      return initialValue;
-    }
-  });
-
-  const setValue = (value) => {
-    try {
-      setStoredValue(value);
-      window.localStorage.setItem(key, JSON.stringify(value));
-    } catch (error) {
-      console.error('Error saving to localStorage:', error);
-    }
-  };
-
-  return [storedValue, setValue];
+const useMemoryStorage = (key, initialValue) => {
+  const [storedValue, setStoredValue] = useState(initialValue);
+  return [storedValue, setStoredValue];
 };
 
 const useVoiceRecognition = () => {
@@ -57,15 +39,22 @@ const useVoiceRecognition = () => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     recognitionRef.current = new SpeechRecognition();
     recognitionRef.current.continuous = false;
-    recognitionRef.current.interimResults = true;
+    recognitionRef.current.interimResults = false; // Changed to false for better accuracy
+    recognitionRef.current.lang = 'en-US'; // Explicitly set language
 
     recognitionRef.current.onresult = (event) => {
       const current = event.resultIndex;
       const transcript = event.results[current][0].transcript;
+      console.log('Voice transcript:', transcript); // Debug log
       setTranscript(transcript);
     };
 
     recognitionRef.current.onend = () => {
+      setIsListening(false);
+    };
+
+    recognitionRef.current.onerror = (event) => {
+      console.error('Speech recognition error:', event.error);
       setIsListening(false);
     };
 
@@ -97,62 +86,120 @@ const useVoiceRecognition = () => {
 // Main Component
 const ExpenseTracker = () => {
   const [expenses, dispatch] = useReducer(expenseReducer, []);
-  const [budget, setBudget] = useLocalStorage('budget', 1000);
-  const [darkMode, setDarkMode] = useLocalStorage('darkMode', false);
+  const [budget, setBudget] = useMemoryStorage('budget', 1000);
+  const [darkMode, setDarkMode] = useMemoryStorage('darkMode', false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [newExpense, setNewExpense] = useState({ amount: '', category: '', description: '' });
+  const [debugInfo, setDebugInfo] = useState(''); // For debugging voice commands
   const { isListening, transcript, startListening, stopListening } = useVoiceRecognition();
   const fileInputRef = useRef(null);
-
-  // Load expenses from localStorage
-  useEffect(() => {
-    const savedExpenses = localStorage.getItem('expenses');
-    if (savedExpenses) {
-      dispatch({ type: 'SET_EXPENSES', payload: JSON.parse(savedExpenses) });
-    }
-  }, []);
-
-  // Save expenses to localStorage
-  useEffect(() => {
-    localStorage.setItem('expenses', JSON.stringify(expenses));
-  }, [expenses]);
 
   // Process voice command
   useEffect(() => {
     if (transcript) {
+      console.log('Processing transcript:', transcript);
       const voiceExpense = parseVoiceCommand(transcript);
+      console.log('Parsed expense:', voiceExpense);
+      setDebugInfo(`Parsed: ${JSON.stringify(voiceExpense)}`);
+      
       if (voiceExpense) {
         setNewExpense(voiceExpense);
         setShowAddForm(true);
+      } else {
+        setDebugInfo('Could not parse voice command. Try: "Add 50 dollars for groceries"');
       }
     }
   }, [transcript]);
 
   const parseVoiceCommand = (text) => {
-    const lowerText = text.toLowerCase();
+    const lowerText = text.toLowerCase().trim();
+    console.log('Parsing text:', lowerText);
     
-    // Extract amount
-    const amountMatch = lowerText.match(/(\d+(?:\.\d{2})?)\s*(?:dollars?|bucks?|\$)/);
-    if (!amountMatch) return null;
+    // Enhanced amount extraction - more flexible patterns
+    const amountPatterns = [
+      /(\d+(?:\.\d{1,2})?)\s*(?:dollars?|bucks?|\$)/i,
+      /\$\s*(\d+(?:\.\d{1,2})?)/i,
+      /(\d+(?:\.\d{1,2})?)\s*(?:dollar|buck)/i,
+      /spend\s*(\d+(?:\.\d{1,2})?)/i,
+      /spent\s*(\d+(?:\.\d{1,2})?)/i
+    ];
     
-    const amount = amountMatch[1];
+    let amount = null;
+    let amountMatch = null;
     
-    // Extract category
-    const categories = ['food', 'groceries', 'transport', 'entertainment', 'shopping', 'bills', 'health', 'other'];
-    let category = 'Other';
-    
-    for (const cat of categories) {
-      if (lowerText.includes(cat)) {
-        category = cat.charAt(0).toUpperCase() + cat.slice(1);
+    for (const pattern of amountPatterns) {
+      amountMatch = lowerText.match(pattern);
+      if (amountMatch) {
+        amount = amountMatch[1];
         break;
       }
     }
     
-    // Extract description
-    let description = text.replace(amountMatch[0], '').replace(/add|for|spent|expense/gi, '').trim();
-    if (!description) description = category;
-
-    return { amount, category, description };
+    if (!amount) {
+      console.log('No amount found');
+      return null;
+    }
+    
+    console.log('Found amount:', amount);
+    
+    // Enhanced category detection with synonyms and variations
+    const categoryMappings = {
+      'food': ['food', 'eat', 'eating', 'meal', 'lunch', 'dinner', 'breakfast', 'restaurant', 'cafe'],
+      'groceries': ['groceries', 'grocery', 'supermarket', 'market', 'shopping for food', 'food shopping'],
+      'transport': ['transport', 'transportation', 'travel', 'bus', 'taxi', 'uber', 'lyft', 'gas', 'fuel', 'petrol', 'car'],
+      'entertainment': ['entertainment', 'movie', 'cinema', 'game', 'gaming', 'fun', 'party', 'concert', 'show'],
+      'shopping': ['shopping', 'clothes', 'clothing', 'shoes', 'accessories', 'online shopping'],
+      'bills': ['bill', 'bills', 'electricity', 'water', 'internet', 'phone', 'rent', 'utilities'],
+      'health': ['health', 'medical', 'doctor', 'medicine', 'pharmacy', 'hospital', 'dentist'],
+      'other': ['other', 'miscellaneous', 'misc']
+    };
+    
+    let category = 'Other';
+    let foundCategory = false;
+    
+    // Check each category and its synonyms
+    for (const [cat, synonyms] of Object.entries(categoryMappings)) {
+      for (const synonym of synonyms) {
+        if (lowerText.includes(synonym)) {
+          category = cat.charAt(0).toUpperCase() + cat.slice(1);
+          foundCategory = true;
+          console.log(`Found category: ${category} (matched: ${synonym})`);
+          break;
+        }
+      }
+      if (foundCategory) break;
+    }
+    
+    // Enhanced description extraction
+    let description = text;
+    
+    // Remove amount mentions
+    if (amountMatch) {
+      description = description.replace(amountMatch[0], '');
+    }
+    
+    // Remove common command words
+    const removeWords = ['add', 'spent', 'spend', 'for', 'on', 'buying', 'bought', 'purchase', 'purchased'];
+    removeWords.forEach(word => {
+      const regex = new RegExp(`\\b${word}\\b`, 'gi');
+      description = description.replace(regex, '');
+    });
+    
+    description = description.trim();
+    
+    // If description is empty or too short, use category
+    if (!description || description.length < 2) {
+      description = category;
+    }
+    
+    const result = { 
+      amount: amount, 
+      category: category, 
+      description: description 
+    };
+    
+    console.log('Final parsed result:', result);
+    return result;
   };
 
   const addExpense = () => {
@@ -167,6 +214,7 @@ const ExpenseTracker = () => {
     dispatch({ type: 'ADD_EXPENSE', payload: expense });
     setNewExpense({ amount: '', category: '', description: '' });
     setShowAddForm(false);
+    setDebugInfo(''); // Clear debug info after successful add
   };
 
   const deleteExpense = (id) => {
@@ -199,31 +247,9 @@ const ExpenseTracker = () => {
     return acc;
   }, []);
 
-  const exportToPDF = () => {
-    const doc = new jsPDF();
-    doc.setFontSize(20);
-    doc.text('Expense Report', 20, 20);
-    
-    doc.setFontSize(12);
-    doc.text(`Total Expenses: $${totalExpenses.toFixed(2)}`, 20, 40);
-    doc.text(`Budget: $${budget}`, 20, 50);
-    doc.text(`Remaining: $${remainingBudget.toFixed(2)}`, 20, 60);
-    
-    let yPosition = 80;
-    doc.text('Expenses:', 20, yPosition);
-    
-    expenses.forEach((expense, index) => {
-      yPosition += 10;
-      doc.text(`${expense.date} - ${expense.category}: $${expense.amount} (${expense.description})`, 20, yPosition);
-    });
-    
-    doc.save('expense-report.pdf');
-  };
-
   const handleImageCapture = (event) => {
     const file = event.target.files[0];
     if (file) {
-      // In a real app, you'd process the image with OCR
       alert('Receipt captured! In a real app, this would extract expense data using OCR.');
     }
   };
@@ -293,6 +319,19 @@ const ExpenseTracker = () => {
             <p className="text-sm mt-2">{budgetPercentage.toFixed(1)}% of budget used</p>
           </div>
 
+          {/* Voice Command Instructions */}
+          <div className={`p-4 rounded-xl shadow-lg mb-6 ${darkMode ? 'bg-blue-900' : 'bg-blue-50'} border border-blue-200`}>
+            <h3 className="text-lg font-semibold mb-2 text-blue-700">💡 Voice Command Examples:</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
+              <p>• "Add 50 dollars for groceries"</p>
+              <p>• "Spent 25 on transport"</p>
+              <p>• "Add 15 dollars for lunch food"</p>
+              <p>• "Bought entertainment tickets for 30 dollars"</p>
+              <p>• "Add 100 for shopping clothes"</p>
+              <p>• "Spent 75 dollars on bills electricity"</p>
+            </div>
+          </div>
+
           {/* Voice Command & Add Expense */}
           <div className={`p-6 rounded-xl shadow-lg mb-6 ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
             <div className="flex flex-wrap gap-4 items-center justify-between">
@@ -333,19 +372,14 @@ const ExpenseTracker = () => {
                   className="hidden"
                 />
               </div>
-
-              <button
-                onClick={exportToPDF}
-                className="flex items-center gap-2 px-6 py-3 bg-gray-600 text-white rounded-lg font-semibold hover:bg-gray-700 transition-colors"
-              >
-                <Download className="w-5 h-5" />
-                Export PDF
-              </button>
             </div>
 
             {transcript && (
               <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
                 <p className="text-blue-800">Voice Command: "{transcript}"</p>
+                {debugInfo && (
+                  <p className="text-sm text-gray-600 mt-1">{debugInfo}</p>
+                )}
               </div>
             )}
           </div>
@@ -427,7 +461,7 @@ const ExpenseTracker = () => {
               </div>
 
               <div className={`p-6 rounded-xl shadow-lg ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
-                <h3 className="text-xl font-semibold mb-4">Monthly Spending</h3>
+                <h3 className="text-xl font-semibeld mb-4">Monthly Spending</h3>
                 <ResponsiveContainer width="100%" height={300}>
                   <BarChart data={monthlyData}>
                     <CartesianGrid strokeDasharray="3 3" />
