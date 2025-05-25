@@ -1,14 +1,19 @@
 {
+  "homepage": "https://YashG504.github.io/expense-tracker",
   "name": "expense-tracker",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "lint": "eslint .",
-    "preview": "vite preview"
-  },
+  "dev": "vite",
+  "build": "vite build",
+  "lint": "eslint .",
+  "preview": "vite preview",
+  "predeploy": "npm run build",
+  "deploy": "gh-pages -d dist"
+}
+,
+
   "dependencies": {
     "gh-pages": "^6.3.0",
     "jspdf": "^3.0.1",
